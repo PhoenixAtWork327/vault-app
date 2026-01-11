@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Collaborative Vault</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script>
+    // State management
+    let state = {
+      vaultId: '',
+      username: '',
+      isLoggedIn: false,
+      vault: { folders: [], notes: [] },
+      selectedNote: null,
+      expandedFolders: new Set(),
+      saveStatus: '',
+      commentText: '',
+      isRecording: false,
+      mediaRecorder: null
+    };
+
+    // Storage functions
+    async function loadVault() {
+      try {
+        const key = `vault_${state.vaultId}`;
+        const result = await window.storage.get(key, true);
+        if (result) {
+          state.vault = JSON.parse(result.value);
+        } else {
+          state.vault = { folders: [], notes: [] };
+        }
+      } catch (error) {
+        console.log('New vault created');
+        state.vault = { folders: [], notes: [] };
+      }
+      render();
+    }
+
+    async function saveVault() {
+      state.saveStatus = 'Saving...';
+      render();
+      try {
+        const key = `vault_${state.vaultId}`;
+        await window.storage.set(key, JSON.stringify(state.vault), true);
+        state.saveStatus = 'Saved ✓';
+        render();
+        setTimeout(() => {
+          state.saveStatus = '';
+          render();
+        }, 2000);
+      } catch (error) {
+        state.saveStatus = 'Error saving';
+        console.error('Save error:', error);
+        render();
+      }
+    }
+
+    // UI functions
+    function handleLogin() {
+      if (state.vaultId.trim() && state.username.trim()) {
+        state.isLoggedIn = true;
+        loadVault();
+      }
+    }
+
+    function createFolder() {
+      const name = prompt('Folder name:');
+      if (name) {
+        state.vault.folders.push({
+          id: Date.now().toString(),
+          name,
+          notes: []
+        });
+        render();
+      }
+    }
+
+    function createNote(folderId = null) {
+      const title = prompt('Note title:');
+      if (title) {
+        const newNote = {
+          id: Date.now().toString(),
+          title,
+          content: '',
+          folderId,
+          created: new Date().toISOString(),
+          comments: [],
+          images: [],
+          audioNotes: [],
+          links: []
+        };
+        
+        if (folderId) {
+          const folder = state.vault.folders.find(f => f.id === folderId);
+          if (folder) {
+            folder.notes.push(newNote.id);
+          }
+        }
+        
+        state.vault.notes.push(newNote);
+        state.selectedNote = newNote;
+        render();
+      }
+    }
+
+    function updateNote(noteId, content) {
+      const note = state.vault.notes.find(n => n.id === noteId);
+      if (note) {
+        note.content = content;
+        if (state.selectedNote && state.selectedNote.id === noteId) {
+          state.selectedNote.content = content;
+        }
+      }
+    }
+
+    function deleteNote(noteId) {
+      if (confirm('Delete this note?')) {
+        state.vault.notes = state.vault.notes.filter(n => n.id !== noteId);
+        state.vault.folders.forEach(f => {
+          f.notes = f.notes.filter(id => id !== noteId);
+        });
+        state.selectedNote = null;
+        render();
+      }
+    }
+
+    function addComment() {
+      if (!state.commentText.trim()) return;
+      
+      const newComment = {
+        id: Date.now().toString(),
+        text: state.commentText,
+        author: state.username,
+        timestamp: new Date().toISOString()
+      };
+      
+      const note = state.vault.notes.find(n => n.id === state.selectedNote.id);
+      if (note) {
+        if (!note.comments) note.comments = [];
+        note.comments.push(newComment);
+        state.selectedNote.comments = note.comments;
+      }
+      
+      state.commentText = '';
+      render();
+    }
+
+    function addImage() {
+      const url = prompt('Enter image URL:');
+      if (url) {
+        const note = state.vault.notes.find(n => n.id === state.selectedNote.id);
+        if (note) {
+          if (!note.images) note.images = [];
+          note.images.push({ id: Date.now().toString(), url });
+          state.selectedNote.images = note.images;
+          render();
+        }
+      }
+    }
+
+    function addLink() {
+      const url = prompt('Enter link URL:');
+      if (url) {
+        const title = prompt('Link title (optional):') || url;
+        const note = state.vault.notes.find(n => n.id === state.selectedNote.id);
+        if (note) {
+          if (!note.links) note.links = [];
+          note.links.push({ id: Date.now().toString(), url, title });
+          state.selectedNote.links = note.links;
+          render();
+        }
+      }
+    }
+
+    async function startRecording() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const recorder = new MediaRecorder(stream);
+        const chunks = [];
+
+        recorder.ondataavailable = (e) => chunks.push(e.data);
+        recorder.onstop = () => {
+          const blob = new Blob(chunks, { type: 'audio/webm' });
+          const url = URL.createObjectURL(blob);
+          
+          const note = state.vault.notes.find(n => n.id === state.selectedNote.id);
+          if (note) {
+            if (!note.audioNotes) note.audioNotes = [];
+            note.audioNotes.push({
+              id: Date.now().toString(),
+              url,
+              timestamp: new Date().toISOString()
+            });
+            state.selectedNote.audioNotes = note.audioNotes;
+            render();
+          }
+          
+          stream.getTracks().forEach(track => track.stop());
+        };
+
+        recorder.start();
+        state.mediaRecorder = recorder;
+        state.isRecording = true;
+        render();
+      } catch (err) {
+        alert('Microphone access denied');
+      }
+    }
+
+    function stopRecording() {
+      if (state.mediaRecorder) {
+        state.mediaRecorder.stop();
+        state.isRecording = false;
+        state.mediaRecorder = null;
+        render();
+      }
+    }
+
+    function toggleFolder(folderId) {
+      if (state.expandedFolders.has(folderId)) {
+        state.expandedFolders.delete(folderId);
+      } else {
+        state.expandedFolders.add(folderId);
+      }
+      render();
+    }
+
+    function selectNote(note) {
+      state.selectedNote = note;
+      render();
+    }
+
+    function renderContent(content) {
+      const lines = content.split('\n');
+      let html = '';
+      
+      lines.forEach(line => {
+        const ytMatch = line.match(/https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\s]+)(?:&t=(\d+))?/);
+        if (ytMatch) {
+          const videoId = ytMatch[1];
+          const timestamp = ytMatch[2] || 0;
+          html += `<div class="my-4">
+            <iframe width="100%" height="315" src="https://www.youtube.com/embed/${videoId}?start=${timestamp}" 
+              frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+              allowfullscreen></iframe>
+          </div>`;
+        } else {
+          const imgMatch = line.match(/!\[.*?\]\((https?:\/\/[^\)]+)\)/);
+          if (imgMatch) {
+            html += `<img src="${imgMatch[1]}" alt="" class="max-w-full my-2 rounded">`;
+          } else {
+            html += `<p class="mb-2">${line}</p>`;
+          }
+        }
+      });
+      
+      return html;
+    }
+
+    // Render function
+    function render() {
+      const app = document.getElementById('app');
+      
+      if (!state.isLoggedIn) {
+        app.innerHTML = `
+          <div class="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 flex items-center justify-center p-4">
+            <div class="bg-white rounded-lg shadow-2xl p-8 w-full max-w-md">
+              <h1 class="text-3xl font-bold mb-2 text-slate-800">Vault Access</h1>
+              <p class="text-slate-600 mb-6">Enter vault ID and your name to collaborate</p>
+              <input
+                type="text"
+                id="username"
+                placeholder="Your Name"
+                class="w-full px-4 py-3 border-2 border-slate-300 rounded-lg mb-4 focus:outline-none focus:border-blue-500"
+              />
+              <input
+                type="text"
+                id="vaultId"
+                placeholder="Vault ID"
+                class="w-full px-4 py-3 border-2 border-slate-300 rounded-lg mb-4 focus:outline-none focus:border-blue-500"
+              />
+              <button
+                onclick="document.getElementById('username').value && document.getElementById('vaultId').value && (state.username = document.getElementById('username').value, state.vaultId = document.getElementById('vaultId').value, handleLogin())"
+                class="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 transition font-semibold"
+              >
+                Access Vault
+              </button>
+              <p class="text-sm text-slate-500 mt-4">
+                Share vault ID with friends for collaboration
+              </p>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      // Main app UI
+      const rootNotes = state.vault.notes.filter(n => !n.folderId);
+      const notesHtml = rootNotes.map(note => `
+        <div onclick="selectNote(${JSON.stringify(note).replace(/"/g, '&quot;')})" 
+          class="px-3 py-2 rounded cursor-pointer mb-1 ${state.selectedNote?.id === note.id ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100'}">
+          ${note.title}
+        </div>
+      `).join('');
+
+      const foldersHtml = state.vault.folders.map(folder => {
+        const isExpanded = state.expandedFolders.has(folder.id);
+        const folderNotes = folder.notes.map(noteId => {
+          const note = state.vault.notes.find(n => n.id === noteId);
+          if (!note) return '';
+          return `
+            <div onclick="selectNote(${JSON.stringify(note).replace(/"/g, '&quot;')})" 
+              class="px-3 py-2 rounded cursor-pointer mb-1 ${state.selectedNote?.id === note.id ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100'}">
+              ${note.title}
+            </div>
+          `;
+        }).join('');
+
+        return `
+          <div class="mb-2">
+            <div onclick="toggleFolder('${folder.id}')" class="flex items-center gap-2 px-3 py-2 rounded cursor-pointer hover:bg-slate-100">
+              <span>${isExpanded ? '▼' : '▶'}</span>
+              <span class="font-medium">${folder.name}</span>
+            </div>
+            ${isExpanded ? `
+              <div class="ml-6">
+                ${folderNotes}
+                <button onclick="createNote('${folder.id}')" class="w-full text-left px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded">
+                  + Add note
+                </button>
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+
+      let mainContent = '';
+      if (state.selectedNote) {
+        const imagesHtml = (state.selectedNote.images || []).map(img => 
+          `<img src="${img.url}" alt="" class="w-full h-32 object-cover rounded">`
+        ).join('');
+
+        const linksHtml = (state.selectedNote.links || []).map(link =>
+          `<a href="${link.url}" target="_blank" class="block text-blue-600 hover:underline mb-1">${link.title}</a>`
+        ).join('');
+
+        const audioHtml = (state.selectedNote.audioNotes || []).map(audio =>
+          `<div class="mb-2">
+            <audio controls src="${audio.url}" class="w-full"></audio>
+            <span class="text-xs text-slate-500">${new Date(audio.timestamp).toLocaleString()}</span>
+          </div>`
+        ).join('');
+
+        const commentsHtml = (state.selectedNote.comments || []).map(comment =>
+          `<div class="bg-slate-50 p-3 rounded">
+            <div class="flex justify-between items-start mb-1">
+              <span class="font-semibold text-sm">${comment.author}</span>
+              <span class="text-xs text-slate-500">${new Date(comment.timestamp).toLocaleString()}</span>
+            </div>
+            <p class="text-sm">${comment.text}</p>
+          </div>`
+        ).join('');
+
+        mainContent = `
+          <div class="bg-white border-b px-6 py-4 flex items-center justify-between">
+            <h2 class="text-2xl font-bold text-slate-800">${state.selectedNote.title}</h2>
+            <div class="flex gap-2">
+              <button onclick="addImage()" class="p-2 hover:bg-slate-100 rounded" title="Add Image">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                  <circle cx="8.5" cy="8.5" r="1.5"/>
+                  <polyline points="21 15 16 10 5 21"/>
+                </svg>
+              </button>
+              <button onclick="addLink()" class="p-2 hover:bg-slate-100 rounded" title="Add Link">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                </svg>
+              </button>
+              <button onclick="${state.isRecording ? 'stopRecording()' : 'startRecording()'}" 
+                class="p-2 rounded ${state.isRecording ? 'bg-red-500 text-white' : 'hover:bg-slate-100'}" title="Audio Note">
+                🎤
+              </button>
+              <button onclick="deleteNote('${state.selectedNote.id}')" class="p-2 text-red-600 hover:bg-red-50 rounded">
+                🗑️
+              </button>
+            </div>
+          </div>
+          
+          <div class="flex-1 overflow-y-auto p-6">
+            <textarea
+              id="noteContent"
+              oninput="updateNote('${state.selectedNote.id}', this.value)"
+              placeholder="Type notes... Paste YouTube links with &t=123 for timestamps"
+              class="w-full h-48 p-4 border rounded mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+            >${state.selectedNote.content}</textarea>
+
+            ${imagesHtml ? `<div class="mb-4"><h3 class="font-bold mb-2">Images</h3><div class="grid grid-cols-3 gap-2">${imagesHtml}</div></div>` : ''}
+            ${linksHtml ? `<div class="mb-4"><h3 class="font-bold mb-2">Links</h3>${linksHtml}</div>` : ''}
+            ${audioHtml ? `<div class="mb-4"><h3 class="font-bold mb-2">Audio Notes</h3>${audioHtml}</div>` : ''}
+
+            <div class="border-t pt-4">
+              <h3 class="font-bold mb-2">Preview</h3>
+              <div class="prose max-w-none mb-6">
+                ${renderContent(state.selectedNote.content)}
+              </div>
+            </div>
+
+            <div class="border-t pt-4">
+              <h3 class="font-bold mb-3">💬 Comments (${(state.selectedNote.comments || []).length})</h3>
+              <div class="space-y-3 mb-4">
+                ${commentsHtml}
+              </div>
+              <div class="flex gap-2">
+                <input
+                  type="text"
+                  id="commentInput"
+                  value="${state.commentText}"
+                  oninput="state.commentText = this.value"
+                  onkeypress="if(event.key === 'Enter') addComment()"
+                  placeholder="Add a comment..."
+                  class="flex-1 px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button onclick="addComment()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                  Post
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      } else {
+        mainContent = `
+          <div class="flex-1 flex items-center justify-center text-slate-400">
+            <div class="text-center">
+              <p class="text-xl mb-2">No note selected</p>
+              <p class="text-sm">Create or select a note to get started</p>
+            </div>
+          </div>
+        `;
+      }
+
+      app.innerHTML = `
+        <div class="h-screen flex flex-col bg-slate-100">
+          <div class="bg-white border-b px-6 py-3 flex items-center justify-between">
+            <div class="flex items-center gap-4">
+              <h1 class="text-xl font-bold text-slate-800">Vault: ${state.vaultId}</h1>
+              <span class="text-sm text-slate-500">(${state.username})</span>
+              <button onclick="loadVault()" class="p-2 hover:bg-slate-100 rounded transition" title="Refresh">
+                🔄
+              </button>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-sm text-slate-600">${state.saveStatus}</span>
+              <button onclick="saveVault()" class="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 transition">
+                💾 Save
+              </button>
+            </div>
+          </div>
+
+          <div class="flex flex-1 overflow-hidden">
+            <div class="w-64 bg-white border-r flex flex-col">
+              <div class="p-4 border-b space-y-2">
+                <button onclick="createNote(null)" class="w-full flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">
+                  ➕ New Note
+                </button>
+                <button onclick="createFolder()" class="w-full flex items-center justify-center gap-2 border border-slate-300 px-4 py-2 rounded hover:bg-slate-50 transition">
+                  📁 New Folder
+                </button>
+              </div>
+
+              <div class="flex-1 overflow-y-auto p-4">
+                ${notesHtml}
+                ${foldersHtml}
+              </div>
+            </div>
+
+            <div class="flex-1 flex flex-col">
+              ${mainContent}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Initialize
+    render();
+  </script>
+</body>
+</html>
