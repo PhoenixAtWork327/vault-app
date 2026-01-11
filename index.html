@@ -5,11 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Collaborative Vault</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
 </head>
 <body>
   <div id="app"></div>
 
   <script>
+    // Firebase configuration
+    const firebaseConfig = {
+      apiKey: "AIzaSyC-yZjRUlbwtXKnzJAkBX3n2N2awoT1PTU",
+      authDomain: "vault-app-d6066.firebaseapp.com",
+      databaseURL: "https://vault-app-d6066-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "vault-app-d6066",
+      storageBucket: "vault-app-d6066.firebasestorage.app",
+      messagingSenderId: "655267215214",
+      appId: "1:655267215214:web:df23b579a0a11abb01f37f"
+    };
+
+    // Initialize Firebase
+    firebase.initializeApp(firebaseConfig);
+    const database = firebase.database();
+
     // State management
     let state = {
       vaultId: '',
@@ -25,39 +42,45 @@
     };
 
     // Storage functions
-    async function loadVault() {
-      try {
-        const key = `vault_${state.vaultId}`;
-        const result = await window.storage.get(key, true);
-        if (result) {
-          state.vault = JSON.parse(result.value);
+    function loadVault() {
+      const vaultRef = database.ref('vaults/' + state.vaultId);
+      vaultRef.on('value', (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          state.vault = data;
+          // Update selected note if it exists
+          if (state.selectedNote) {
+            const updatedNote = state.vault.notes.find(n => n.id === state.selectedNote.id);
+            if (updatedNote) {
+              state.selectedNote = updatedNote;
+            }
+          }
         } else {
           state.vault = { folders: [], notes: [] };
         }
-      } catch (error) {
-        console.log('New vault created');
-        state.vault = { folders: [], notes: [] };
-      }
-      render();
+        render();
+      });
     }
 
-    async function saveVault() {
+    function saveVault() {
       state.saveStatus = 'Saving...';
       render();
-      try {
-        const key = `vault_${state.vaultId}`;
-        await window.storage.set(key, JSON.stringify(state.vault), true);
-        state.saveStatus = 'Saved ✓';
-        render();
-        setTimeout(() => {
-          state.saveStatus = '';
+      
+      const vaultRef = database.ref('vaults/' + state.vaultId);
+      vaultRef.set(state.vault)
+        .then(() => {
+          state.saveStatus = 'Saved ✓';
           render();
-        }, 2000);
-      } catch (error) {
-        state.saveStatus = 'Error saving';
-        console.error('Save error:', error);
-        render();
-      }
+          setTimeout(() => {
+            state.saveStatus = '';
+            render();
+          }, 2000);
+        })
+        .catch((error) => {
+          state.saveStatus = 'Error saving';
+          console.error('Save error:', error);
+          render();
+        });
     }
 
     // UI functions
@@ -76,7 +99,7 @@
           name,
           notes: []
         });
-        render();
+        saveVault();
       }
     }
 
@@ -104,7 +127,7 @@
         
         state.vault.notes.push(newNote);
         state.selectedNote = newNote;
-        render();
+        saveVault();
       }
     }
 
@@ -125,7 +148,7 @@
           f.notes = f.notes.filter(id => id !== noteId);
         });
         state.selectedNote = null;
-        render();
+        saveVault();
       }
     }
 
@@ -147,7 +170,7 @@
       }
       
       state.commentText = '';
-      render();
+      saveVault();
     }
 
     function addImage() {
@@ -158,7 +181,7 @@
           if (!note.images) note.images = [];
           note.images.push({ id: Date.now().toString(), url });
           state.selectedNote.images = note.images;
-          render();
+          saveVault();
         }
       }
     }
@@ -172,7 +195,7 @@
           if (!note.links) note.links = [];
           note.links.push({ id: Date.now().toString(), url, title });
           state.selectedNote.links = note.links;
-          render();
+          saveVault();
         }
       }
     }
@@ -186,19 +209,23 @@
         recorder.ondataavailable = (e) => chunks.push(e.data);
         recorder.onstop = () => {
           const blob = new Blob(chunks, { type: 'audio/webm' });
-          const url = URL.createObjectURL(blob);
-          
-          const note = state.vault.notes.find(n => n.id === state.selectedNote.id);
-          if (note) {
-            if (!note.audioNotes) note.audioNotes = [];
-            note.audioNotes.push({
-              id: Date.now().toString(),
-              url,
-              timestamp: new Date().toISOString()
-            });
-            state.selectedNote.audioNotes = note.audioNotes;
-            render();
-          }
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const base64Audio = reader.result;
+            
+            const note = state.vault.notes.find(n => n.id === state.selectedNote.id);
+            if (note) {
+              if (!note.audioNotes) note.audioNotes = [];
+              note.audioNotes.push({
+                id: Date.now().toString(),
+                data: base64Audio,
+                timestamp: new Date().toISOString()
+              });
+              state.selectedNote.audioNotes = note.audioNotes;
+              saveVault();
+            }
+          };
+          reader.readAsDataURL(blob);
           
           stream.getTracks().forEach(track => track.stop());
         };
@@ -254,7 +281,7 @@
           if (imgMatch) {
             html += `<img src="${imgMatch[1]}" alt="" class="max-w-full my-2 rounded">`;
           } else {
-            html += `<p class="mb-2">${line}</p>`;
+            html += `<p class="mb-2">${line || '&nbsp;'}</p>`;
           }
         }
       });
@@ -281,7 +308,7 @@
               <input
                 type="text"
                 id="vaultId"
-                placeholder="Vault ID"
+                placeholder="Vault ID (e.g., amit-varma-podcasts)"
                 class="w-full px-4 py-3 border-2 border-slate-300 rounded-lg mb-4 focus:outline-none focus:border-blue-500"
               />
               <button
@@ -291,7 +318,7 @@
                 Access Vault
               </button>
               <p class="text-sm text-slate-500 mt-4">
-                Share vault ID with friends for collaboration
+                ✨ Share vault ID with friends for real-time collaboration
               </p>
             </div>
           </div>
@@ -302,7 +329,7 @@
       // Main app UI
       const rootNotes = state.vault.notes.filter(n => !n.folderId);
       const notesHtml = rootNotes.map(note => `
-        <div onclick="selectNote(${JSON.stringify(note).replace(/"/g, '&quot;')})" 
+        <div onclick='selectNote(${JSON.stringify(note)})' 
           class="px-3 py-2 rounded cursor-pointer mb-1 ${state.selectedNote?.id === note.id ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100'}">
           ${note.title}
         </div>
@@ -314,7 +341,7 @@
           const note = state.vault.notes.find(n => n.id === noteId);
           if (!note) return '';
           return `
-            <div onclick="selectNote(${JSON.stringify(note).replace(/"/g, '&quot;')})" 
+            <div onclick='selectNote(${JSON.stringify(note)})' 
               class="px-3 py-2 rounded cursor-pointer mb-1 ${state.selectedNote?.id === note.id ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100'}">
               ${note.title}
             </div>
@@ -346,12 +373,12 @@
         ).join('');
 
         const linksHtml = (state.selectedNote.links || []).map(link =>
-          `<a href="${link.url}" target="_blank" class="block text-blue-600 hover:underline mb-1">${link.title}</a>`
+          `<a href="${link.url}" target="_blank" class="block text-blue-600 hover:underline mb-1">📎 ${link.title}</a>`
         ).join('');
 
         const audioHtml = (state.selectedNote.audioNotes || []).map(audio =>
           `<div class="mb-2">
-            <audio controls src="${audio.url}" class="w-full"></audio>
+            <audio controls src="${audio.data}" class="w-full"></audio>
             <span class="text-xs text-slate-500">${new Date(audio.timestamp).toLocaleString()}</span>
           </div>`
         ).join('');
@@ -371,17 +398,10 @@
             <h2 class="text-2xl font-bold text-slate-800">${state.selectedNote.title}</h2>
             <div class="flex gap-2">
               <button onclick="addImage()" class="p-2 hover:bg-slate-100 rounded" title="Add Image">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                  <circle cx="8.5" cy="8.5" r="1.5"/>
-                  <polyline points="21 15 16 10 5 21"/>
-                </svg>
+                🖼️
               </button>
               <button onclick="addLink()" class="p-2 hover:bg-slate-100 rounded" title="Add Link">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-                </svg>
+                🔗
               </button>
               <button onclick="${state.isRecording ? 'stopRecording()' : 'startRecording()'}" 
                 class="p-2 rounded ${state.isRecording ? 'bg-red-500 text-white' : 'hover:bg-slate-100'}" title="Audio Note">
@@ -399,16 +419,16 @@
               oninput="updateNote('${state.selectedNote.id}', this.value)"
               placeholder="Type notes... Paste YouTube links with &t=123 for timestamps"
               class="w-full h-48 p-4 border rounded mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-            >${state.selectedNote.content}</textarea>
+            >${state.selectedNote.content || ''}</textarea>
 
             ${imagesHtml ? `<div class="mb-4"><h3 class="font-bold mb-2">Images</h3><div class="grid grid-cols-3 gap-2">${imagesHtml}</div></div>` : ''}
             ${linksHtml ? `<div class="mb-4"><h3 class="font-bold mb-2">Links</h3>${linksHtml}</div>` : ''}
             ${audioHtml ? `<div class="mb-4"><h3 class="font-bold mb-2">Audio Notes</h3>${audioHtml}</div>` : ''}
 
-            <div class="border-t pt-4">
+            <div class="border-t pt-4 mb-6">
               <h3 class="font-bold mb-2">Preview</h3>
-              <div class="prose max-w-none mb-6">
-                ${renderContent(state.selectedNote.content)}
+              <div class="prose max-w-none">
+                ${renderContent(state.selectedNote.content || '')}
               </div>
             </div>
 
@@ -451,9 +471,7 @@
             <div class="flex items-center gap-4">
               <h1 class="text-xl font-bold text-slate-800">Vault: ${state.vaultId}</h1>
               <span class="text-sm text-slate-500">(${state.username})</span>
-              <button onclick="loadVault()" class="p-2 hover:bg-slate-100 rounded transition" title="Refresh">
-                🔄
-              </button>
+              <span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded">🔴 Live</span>
             </div>
             <div class="flex items-center gap-3">
               <span class="text-sm text-slate-600">${state.saveStatus}</span>
